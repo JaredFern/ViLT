@@ -59,8 +59,11 @@ class ViLTransformerSS(pl.LightningModule):
             and not self.hparams.config["test_only"]
         ):
             ckpt = torch.load(self.hparams.config["load_path"], map_location="cpu")
-            state_dict = ckpt["state_dict"]
-            self.load_state_dict(state_dict, strict=False)
+            if "state_dict" in ckpt:
+                state_dict = ckpt["state_dict"]
+                self.load_state_dict(state_dict, strict=False)
+            elif self.hparams.config["vit_load_path"]:
+                self.transformer.load_state_dict(ckpt['model'], strict=False)
 
         hs = self.hparams.config["hidden_size"]
 
@@ -104,8 +107,11 @@ class ViLTransformerSS(pl.LightningModule):
 
         if self.hparams.config["load_path"] != "" and self.hparams.config["test_only"]:
             ckpt = torch.load(self.hparams.config["load_path"], map_location="cpu")
-            state_dict = ckpt["state_dict"]
-            self.load_state_dict(state_dict, strict=False)
+            if "state_dict" in ckpt:
+                state_dict = ckpt["state_dict"]
+                self.load_state_dict(state_dict, strict=False)
+            elif self.hparams.config["vit_load_path"]:
+                self.transformer.load_state_dict(ckpt['model'], strict=False)
 
     def infer(
         self,
