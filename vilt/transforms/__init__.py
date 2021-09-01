@@ -1,7 +1,4 @@
-from .pixelbert import (
-    pixelbert_transform,
-    pixelbert_transform_randaug,
-)
+from .pixelbert import pixelbert_transform, pixelbert_transform_randaug
 
 _transforms = {
     "pixelbert": pixelbert_transform,

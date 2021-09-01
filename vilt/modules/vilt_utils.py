@@ -1,14 +1,15 @@
-import torch
 import random
 
-from transformers.optimization import AdamW
+import torch
 from transformers import (
-    get_polynomial_decay_schedule_with_warmup,
     get_cosine_schedule_with_warmup,
+    get_polynomial_decay_schedule_with_warmup,
 )
+from transformers.optimization import AdamW
+
+from vilt.gadgets.my_metrics import Accuracy, Scalar, VQAScore
 from vilt.modules.dist_utils import all_gather
 from vilt.modules.objectives import compute_irtr_recall
-from vilt.gadgets.my_metrics import Accuracy, VQAScore, Scalar
 
 
 def set_metrics(pl_module):

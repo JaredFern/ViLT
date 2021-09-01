@@ -1,11 +1,10 @@
 import torch
-
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import DataLoader
 from transformers import (
+    BertTokenizer,
     DataCollatorForLanguageModeling,
     DataCollatorForWholeWordMask,
-    BertTokenizer,
 )
 
 

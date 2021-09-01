@@ -1,14 +1,14 @@
+import functools
+import glob
+import json
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import os
-import glob
-import json
 import tqdm
-import functools
-
-from torch.utils.data.distributed import DistributedSampler
 from einops import rearrange
+from torch.utils.data.distributed import DistributedSampler
 
 from vilt.modules.dist_utils import all_gather
 

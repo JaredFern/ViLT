@@ -1,22 +1,20 @@
-import gradio as gr
-import torch
 import copy
-import time
-import requests
 import io
-import numpy as np
 import re
+import time
 
+import gradio as gr
 import ipdb
-
+import numpy as np
+import requests
+import torch
 from PIL import Image
 
 from vilt.config import ex
+from vilt.datamodules.datamodule_base import get_pretrained_tokenizer
 from vilt.modules import ViLTransformerSS
-
 from vilt.modules.objectives import cost_matrix_cosine, ipot
 from vilt.transforms import pixelbert_transform
-from vilt.datamodules.datamodule_base import get_pretrained_tokenizer
 
 
 @ex.automain

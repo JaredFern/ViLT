@@ -1,9 +1,7 @@
-from .utils import (
-    inception_normalize,
-    MinMaxResize,
-)
 from torchvision import transforms
+
 from .randaug import RandAugment
+from .utils import MinMaxResize, inception_normalize
 
 
 def pixelbert_transform(size=800):
