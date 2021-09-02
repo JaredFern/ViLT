@@ -1,12 +1,12 @@
 import json
 import os
+import random
+from collections import defaultdict
+from glob import glob
+
 import pandas as pd
 import pyarrow as pa
-import random
-
 from tqdm import tqdm
-from glob import glob
-from collections import defaultdict
 
 
 def path2rest(path, iid2captions, iid2split):

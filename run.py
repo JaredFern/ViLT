@@ -1,10 +1,11 @@
-import os
 import copy
+import os
+
 import pytorch_lightning as pl
 
 from vilt.config import ex
-from vilt.modules import ViLTransformerSS
 from vilt.datamodules.multitask_datamodule import MTDataModule
+from vilt.modules import ViLTransformerSS
 
 
 @ex.automain

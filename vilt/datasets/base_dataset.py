@@ -1,10 +1,11 @@
-import random
-import torch
 import io
-import pyarrow as pa
 import os
+import random
 
+import pyarrow as pa
+import torch
 from PIL import Image
+
 from vilt.transforms import keys_to_transforms
 
 

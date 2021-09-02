@@ -1,6 +1,7 @@
-from .base_dataset import BaseDataset
-import sys
 import random
+import sys
+
+from .base_dataset import BaseDataset
 
 
 class NLVR2Dataset(BaseDataset):
