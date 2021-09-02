@@ -1,16 +1,33 @@
+import functools
+import glob
+import json
+import os
+import pickle
+from collections import defaultdict
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import os
-import glob
-import json
 import tqdm
-import functools
-
-from torch.utils.data.distributed import DistributedSampler
 from einops import rearrange
+from torch.utils.data.distributed import DistributedSampler
 
 from vilt.modules.dist_utils import all_gather
+from vilt.utils.modality_mixture import get_attn_confusion, segment_sequence
+
+seg2id = {
+    "CLS": 0,
+    "SEP": 1,
+    "IMG": 2,
+    "LANG": 3,
+    "POS_V": 4,
+    "POS_N": 5,
+    "POS_M": 6,
+    "POS_W": 7,
+    "POS_P": 8,
+    "POS_F": 9,
+    # "ALL": 10,
+}
 
 
 def cost_matrix_cosine(x, y, eps=1e-5):
@@ -27,7 +44,7 @@ def cost_matrix_cosine(x, y, eps=1e-5):
 
 
 def trace(x):
-    """ compute trace of input tensor (batched) """
+    """compute trace of input tensor (batched)"""
     b, m, n = x.size()
     assert m == n
     mask = torch.eye(n, dtype=torch.bool, device=x.device).unsqueeze(0).expand_as(x)
@@ -37,7 +54,7 @@ def trace(x):
 
 @torch.no_grad()
 def ipot(C, x_len, x_pad, y_len, y_pad, joint_pad, beta, iteration, k):
-    """ [B, M, N], [B], [B, M], [B], [B, N], [B, M, N]"""
+    """[B, M, N], [B], [B, M], [B], [B, N], [B, M, N]"""
     b, m, n = C.size()
     sigma = torch.ones(b, m, dtype=C.dtype, device=C.device) / x_len.unsqueeze(1)
     T = torch.ones(b, n, m, dtype=C.dtype, device=C.device)
@@ -71,7 +88,7 @@ def ipot(C, x_len, x_pad, y_len, y_pad, joint_pad, beta, iteration, k):
 def optimal_transport_dist(
     txt_emb, img_emb, txt_pad, img_pad, beta=0.5, iteration=50, k=1
 ):
-    """ [B, M, D], [B, N, D], [B, M], [B, N]"""
+    """[B, M, D], [B, N, D], [B, M], [B, N]"""
     cost = cost_matrix_cosine(txt_emb, img_emb)
     # mask the padded inputs
     joint_pad = txt_pad.unsqueeze(-1) | img_pad.unsqueeze(-2)
@@ -85,6 +102,35 @@ def optimal_transport_dist(
     )
     distance = trace(cost.matmul(T.detach()))
     return distance
+
+
+def compute_attn_analysis(pl_module, infer):
+    attentions = torch.stack(
+        infer["attentions"]
+    )  # (Layers, BS, Heads, SeqLen x SeqLen)
+    attentions = attentions.permute(1, 0, 2, 3, 4)
+
+    seg2attn = defaultdict(lambda: defaultdict(list))
+    for idx in range(len(infer["text_ids"])):
+        sequence2segments = segment_sequence(
+            infer["text_ids"][idx],
+            infer["text_masks"][idx],
+            infer["image_masks"][idx],
+            pl_module.tokenizer,
+        )
+        attn_confusion = get_attn_confusion(attentions[idx], sequence2segments)
+
+        # Aggregate over segment types
+        for target_seg in seg2id.keys():
+            for src_seg in seg2id.keys():
+                if src_seg not in attn_confusion[target_seg]:
+                    seg2attn[target_seg][src_seg].append(torch.zeros(12, 12).cuda())
+                else:
+                    seg2attn[target_seg][src_seg].append(
+                        attn_confusion[target_seg][src_seg]
+                    )
+
+    return seg2attn
 
 
 def compute_mlm(pl_module, batch):
@@ -298,7 +344,7 @@ def compute_imgcls(pl_module, batch):
     return ret
 
 
-def compute_vqa(pl_module, batch):
+def compute_vqa(pl_module, batch, attn_analysis=False):
     infer = pl_module.infer(batch, mask_text=False, mask_image=False)
     vqa_logits = pl_module.vqa_classifier(infer["cls_feats"])
     vqa_targets = torch.zeros(
@@ -309,8 +355,8 @@ def compute_vqa(pl_module, batch):
     vqa_scores = batch["vqa_scores"]
 
     for i, (_label, _score) in enumerate(zip(vqa_labels, vqa_scores)):
-        for l, s in zip(_label, _score):
-            vqa_targets[i, l] = s
+        for label, score in zip(_label, _score):
+            vqa_targets[i, label] = score
 
     vqa_loss = (
         F.binary_cross_entropy_with_logits(vqa_logits, vqa_targets)
@@ -330,6 +376,10 @@ def compute_vqa(pl_module, batch):
     score = getattr(pl_module, f"{phase}_vqa_score")(
         ret["vqa_logits"], ret["vqa_targets"]
     )
+
+    if attn_analysis:
+        ret["attns"] = compute_attn_analysis(pl_module, infer)
+
     pl_module.log(f"vqa/{phase}/loss", loss)
     pl_module.log(f"vqa/{phase}/score", score)
 
@@ -371,34 +421,32 @@ def compute_nlvr2(pl_module, batch):
         test_batches = [i for i, n in enumerate(batch["table_name"]) if "test" in n]
 
         if dev_batches:
-            dev_loss = getattr(pl_module, f"dev_nlvr2_loss")(
+            dev_loss = getattr(pl_module, "dev_nlvr2_loss")(
                 F.cross_entropy(
                     ret["nlvr2_logits"][dev_batches], ret["nlvr2_labels"][dev_batches]
                 )
             )
-            dev_acc = getattr(pl_module, f"dev_nlvr2_accuracy")(
+            dev_acc = getattr(pl_module, "dev_nlvr2_accuracy")(
                 ret["nlvr2_logits"][dev_batches], ret["nlvr2_labels"][dev_batches]
             )
-            pl_module.log(f"nlvr2/dev/loss", dev_loss)
-            pl_module.log(f"nlvr2/dev/accuracy", dev_acc)
+            pl_module.log("nlvr2/dev/loss", dev_loss)
+            pl_module.log("nlvr2/dev/accuracy", dev_acc)
         if test_batches:
-            test_loss = getattr(pl_module, f"test_nlvr2_loss")(
+            test_loss = getattr(pl_module, "test_nlvr2_loss")(
                 F.cross_entropy(
                     ret["nlvr2_logits"][test_batches], ret["nlvr2_labels"][test_batches]
                 )
             )
-            test_acc = getattr(pl_module, f"test_nlvr2_accuracy")(
+            test_acc = getattr(pl_module, "test_nlvr2_accuracy")(
                 ret["nlvr2_logits"][test_batches], ret["nlvr2_labels"][test_batches]
             )
-            pl_module.log(f"nlvr2/test/loss", test_loss)
-            pl_module.log(f"nlvr2/test/accuracy", test_acc)
+            pl_module.log("nlvr2/test/loss", test_loss)
+            pl_module.log("nlvr2/test/accuracy", test_acc)
 
     return ret
 
 
 def compute_irtr(pl_module, batch):
-    is_training_phase = pl_module.training
-
     _bs, _c, _h, _w = batch["image"][0].shape
     false_len = pl_module.hparams.config["draw_false_text"]
     text_ids = torch.stack(
@@ -584,13 +632,30 @@ def vqa_test_step(pl_module, batch, output):
     vqa_logits = output["vqa_logits"]
     vqa_preds = vqa_logits.argmax(dim=-1)
     vqa_preds = [id2answer[pred.item()] for pred in vqa_preds]
-    questions = batch["text"]
     qids = batch["qid"]
-    return {"qids": qids, "preds": vqa_preds}
+
+    return {"qids": qids, "preds": vqa_preds, "attns": output["attns"]}
 
 
 def arc_test_step(pl_module, batch, output):
     return output
+
+
+def attn_analysis_wrapup(outs):
+    attns = defaultdict(lambda: defaultdict(list))
+    for out in outs:
+        for target_seg in seg2id.keys():
+            for src_seg in seg2id.keys():
+                attns[target_seg][src_seg].extend(out["attns"][target_seg][src_seg])
+
+    for target_seg in seg2id.keys():
+        for src_seg in seg2id.keys():
+            attns[target_seg][src_seg] = (
+                torch.stack(attns[target_seg][src_seg]).mean(0).cpu()
+            )
+
+    with open("attn_analysis.p", "wb") as fp:
+        pickle.dump(dict(attns), fp)
 
 
 def vqa_test_wrapup(outs, model_name):

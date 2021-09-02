@@ -1,10 +1,12 @@
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import pytorch_lightning as pl
-import vilt.modules.vision_transformer as vit
-
+from transformers import BertTokenizer
 from transformers.models.bert.modeling_bert import BertConfig, BertEmbeddings
+
+import vilt.modules.vision_transformer as vit
 from vilt.modules import heads, objectives, vilt_utils
+from vilt.modules.vision_transformer import resize_pos_embed
 
 
 class ViLTransformerSS(pl.LightningModule):
@@ -23,6 +25,7 @@ class ViLTransformerSS(pl.LightningModule):
             attention_probs_dropout_prob=config["drop_rate"],
         )
 
+        self.tokenizer = BertTokenizer.from_pretrained(config["tokenizer"])
         self.text_embeddings = BertEmbeddings(bert_config)
         self.text_embeddings.apply(objectives.init_weights)
 
@@ -61,9 +64,25 @@ class ViLTransformerSS(pl.LightningModule):
             ckpt = torch.load(self.hparams.config["load_path"], map_location="cpu")
             if "state_dict" in ckpt:
                 state_dict = ckpt["state_dict"]
+                pos_embed_weights = state_dict["transformer.pos_embed"]
+                if pos_embed_weights.shape != self.transformer.pos_embed.shape:
+                    img_size = self.transformer.patch_embed.img_size
+                    patch_size = self.transformer.patch_embed.patch_size
+                    grid_size = (
+                        img_size[0] // patch_size[0],
+                        img_size[1] // patch_size[1],
+                    )
+                    pos_embed_weights = resize_pos_embed(
+                        pos_embed_weights,
+                        self.transformer.pos_embed,
+                        getattr(self.transformer, "num_tokens", 1),
+                        grid_size,
+                    )
+                self.transformer.pos_embed.data_ = pos_embed_weights
+                state_dict.pop("transformer.pos_embed")
                 self.load_state_dict(state_dict, strict=False)
             elif self.hparams.config["vit_load_path"]:
-                self.transformer.load_state_dict(ckpt['model'], strict=False)
+                self.transformer.load_state_dict(ckpt["model"], strict=False)
 
         hs = self.hparams.config["hidden_size"]
 
@@ -109,9 +128,26 @@ class ViLTransformerSS(pl.LightningModule):
             ckpt = torch.load(self.hparams.config["load_path"], map_location="cpu")
             if "state_dict" in ckpt:
                 state_dict = ckpt["state_dict"]
+                pos_embed_weights = state_dict["transformer.pos_embed"]
+                if pos_embed_weights.shape != self.transformer.pos_embed.shape:
+                    img_size = self.transformer.patch_embed.img_size
+                    patch_size = self.transformer.patch_embed.patch_size
+                    grid_size = (
+                        img_size[0] // patch_size[0],
+                        img_size[1] // patch_size[1],
+                    )
+                    pos_embed_weights = resize_pos_embed(
+                        pos_embed_weights,
+                        self.transformer.pos_embed,
+                        getattr(self.transformer, "num_tokens", 1),
+                        grid_size,
+                    )
+                self.transformer.pos_embed.data_ = pos_embed_weights
+                state_dict.pop("transformer.pos_embed")
+
                 self.load_state_dict(state_dict, strict=False)
             elif self.hparams.config["vit_load_path"]:
-                self.transformer.load_state_dict(ckpt['model'], strict=False)
+                self.transformer.load_state_dict(ckpt["model"], strict=False)
 
     def infer(
         self,
@@ -130,7 +166,7 @@ class ViLTransformerSS(pl.LightningModule):
         do_mlm = "_mlm" if mask_text else ""
         text_ids = batch[f"text_ids{do_mlm}"]
         text_labels = batch[f"text_labels{do_mlm}"]
-        text_masks = batch[f"text_masks"]
+        text_masks = batch["text_masks"]
         text_embeds = self.text_embeddings(text_ids)
 
         if image_embeds is None and image_masks is None:
@@ -163,11 +199,13 @@ class ViLTransformerSS(pl.LightningModule):
         co_masks = torch.cat([text_masks, image_masks], dim=1)
 
         x = co_embeds
+        attns = []
 
         for i, blk in enumerate(self.transformer.blocks):
-            x, _attn = blk(x, mask=co_masks)
+            # TODO Remove Hardcode
+            x, attn = blk(x, mask=co_masks)
+            attns.append(attn)
 
-        x = self.transformer.norm(x)
         text_feats, image_feats = (
             x[:, : text_embeds.shape[1]],
             x[:, text_embeds.shape[1] :],
@@ -177,6 +215,7 @@ class ViLTransformerSS(pl.LightningModule):
         ret = {
             "text_feats": text_feats,
             "image_feats": image_feats,
+            "attentions": attns,
             "cls_feats": cls_feats,
             "raw_cls_feats": x[:, 0],
             "image_labels": image_labels,
@@ -189,7 +228,7 @@ class ViLTransformerSS(pl.LightningModule):
 
         return ret
 
-    def forward(self, batch):
+    def forward(self, batch, attn_analysis=True):
         ret = dict()
         if len(self.current_tasks) == 0:
             ret.update(self.infer(batch))
@@ -209,7 +248,7 @@ class ViLTransformerSS(pl.LightningModule):
 
         # Visual Question Answering
         if "vqa" in self.current_tasks:
-            ret.update(objectives.compute_vqa(self, batch))
+            ret.update(objectives.compute_vqa(self, batch, attn_analysis))
 
         # Natural Language for Visual Reasoning 2
         if "nlvr2" in self.current_tasks:
@@ -219,12 +258,15 @@ class ViLTransformerSS(pl.LightningModule):
         if "irtr" in self.current_tasks:
             ret.update(objectives.compute_irtr(self, batch))
 
+        # if attn_analysis:
+        #     ret.update(objectives.compute_attn_analysis(self, batch))
+
         return ret
 
     def training_step(self, batch, batch_idx):
         vilt_utils.set_task(self)
         output = self(batch)
-        total_loss = sum([v for k, v in output.items() if "loss" in k])
+        total_loss = sum(v for k, v in output.items() if "loss" in k)
 
         return total_loss
 
@@ -233,14 +275,16 @@ class ViLTransformerSS(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         vilt_utils.set_task(self)
-        output = self(batch)
+        _ = self(batch, attn_analysis=False)
 
     def validation_epoch_end(self, outs):
         vilt_utils.epoch_wrapup(self)
 
     def test_step(self, batch, batch_idx):
         vilt_utils.set_task(self)
-        output = self(batch)
+        output = self(
+            batch, attn_analysis=True
+        )  # self.hparams.config['attn_analysis'])
         ret = dict()
 
         if self.hparams.config["loss_names"]["vqa"] > 0:
@@ -253,6 +297,10 @@ class ViLTransformerSS(pl.LightningModule):
 
         if self.hparams.config["loss_names"]["vqa"] > 0:
             objectives.vqa_test_wrapup(outs, model_name)
+
+        if True:  # self.hparams.config["attn_analysis"]:
+            objectives.attn_analysis_wrapup(outs)
+
         vilt_utils.epoch_wrapup(self)
 
     def configure_optimizers(self):

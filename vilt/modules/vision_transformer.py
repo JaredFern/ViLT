@@ -17,28 +17,25 @@ paper `DeiT: Data-efficient Image Transformers` - https://arxiv.org/abs/2012.128
 
 Hacked together by / Copyright 2020 Ross Wightman
 """
-import math
+import hashlib
 import logging
+import math
+import os
+import urllib
+import warnings
 from functools import partial
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import hashlib
-import os
-import urllib
-import warnings
-
-from functools import partial
-from tqdm import tqdm
-
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.models.helpers import load_pretrained
-from timm.models.layers import StdConv2dSame, DropPath, to_2tuple, trunc_normal_
+from timm.models.layers import DropPath, StdConv2dSame, to_2tuple, trunc_normal_
+from timm.models.registry import register_model
 from timm.models.resnet import resnet26d, resnet50d
 from timm.models.resnetv2 import ResNetV2
-from timm.models.registry import register_model
 from torchvision import transforms
+from tqdm import tqdm
 
 _logger = logging.getLogger(__name__)
 
@@ -82,7 +79,7 @@ def download_clip(
         != expected_sha256
     ):
         raise RuntimeError(
-            f"Model has been downloaded but the SHA256 checksum does not not match"
+            "Model has been downloaded but the SHA256 checksum does not not match"
         )
 
     return download_target
@@ -375,7 +372,7 @@ class Block(nn.Module):
 
 
 class PatchEmbed(nn.Module):
-    """ Image to Patch Embedding"""
+    """Image to Patch Embedding"""
 
     def __init__(
         self,
@@ -409,7 +406,7 @@ class PatchEmbed(nn.Module):
 
 
 class VisionTransformer(nn.Module):
-    """ Vision Transformer
+    """Vision Transformer
 
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -
         https://arxiv.org/abs/2010.11929
@@ -573,7 +570,10 @@ class VisionTransformer(nn.Module):
             [
                 F.pad(
                     F.interpolate(
-                        spatial_pos, size=(h, w), mode="bilinear", align_corners=True,
+                        spatial_pos,
+                        size=(h, w),
+                        mode="bilinear",
+                        align_corners=True,
                     ),
                     (0, W - w, 0, H - h),
                 )
@@ -637,7 +637,8 @@ class VisionTransformer(nn.Module):
                 )
                 select.append(
                     torch.cat(
-                        [valid_row_idx[i], non_valid_row_idx[i][pad_choice]], dim=0,
+                        [valid_row_idx[i], non_valid_row_idx[i][pad_choice]],
+                        dim=0,
                     )
                 )
 
@@ -652,7 +653,11 @@ class VisionTransformer(nn.Module):
 
             label[x_mask == 0] = -100
             label = torch.cat(
-                [torch.full((label.shape[0], 1, 3), -100).to(label), label,], dim=1,
+                [
+                    torch.full((label.shape[0], 1, 3), -100).to(label),
+                    label,
+                ],
+                dim=1,
             )
 
         cls_tokens = self.cls_token.expand(B, -1, -1)
@@ -673,26 +678,34 @@ class VisionTransformer(nn.Module):
         else:
             return x, x_mask, (patch_index, (H, W)), None
 
-    def forward_features(self, _x, max_image_len=144, mask_it=False):
+    def forward_features(self, _x, max_image_len=144, mask_it=False, output_attn=False):
         x, x_mask, patch_index, label = self.visual_embed(
             _x, max_image_len=max_image_len, mask_it=mask_it
         )
 
+        attn_layers = []
         for blk in self.blocks:
-            x, _ = blk(x, mask=x_mask)
+            x, attn = blk(x, mask=x_mask)
+            attn_layers.append(attn)
 
         x = self.norm(x)
-        return x, x_mask, label
+        if output_attn:
+            return x, x_mask, label, attn_layers
+        else:
+            return x, x_mask, label
 
-    def forward(self, x, max_image_len=-1):
-        x, _, _ = self.forward_features(x, max_image_len=max_image_len)
+    def forward(self, x, max_image_len=-1, output_attn=False):
+        x, _, _, attns = self.forward_features(x, max_image_len=max_image_len)
         x = x[:, 0]
         x = self.head(x)
-        return x
+        if output_attn:
+            return x, attns
+        else:
+            return x
 
 
 class DistilledVisionTransformer(VisionTransformer):
-    """ Vision Transformer with distillation token.
+    """Vision Transformer with distillation token.
 
     Paper: `Training data-efficient image transformers & distillation through attention` -
         https://arxiv.org/abs/2012.12877
@@ -728,7 +741,10 @@ class DistilledVisionTransformer(VisionTransformer):
             [
                 F.pad(
                     F.interpolate(
-                        spatial_pos, size=(h, w), mode="bilinear", align_corners=True,
+                        spatial_pos,
+                        size=(h, w),
+                        mode="bilinear",
+                        align_corners=True,
                     ),
                     (0, W - w, 0, H - h),
                 )
@@ -792,7 +808,8 @@ class DistilledVisionTransformer(VisionTransformer):
                 )
                 select.append(
                     torch.cat(
-                        [valid_row_idx[i], non_valid_row_idx[i][pad_choice]], dim=0,
+                        [valid_row_idx[i], non_valid_row_idx[i][pad_choice]],
+                        dim=0,
                     )
                 )
 
@@ -806,7 +823,11 @@ class DistilledVisionTransformer(VisionTransformer):
 
             label[x_mask == 0] = -100
             label = torch.cat(
-                [torch.full((label.shape[0], 1, 3), -100).to(label), label,], dim=1,
+                [
+                    torch.full((label.shape[0], 1, 3), -100).to(label),
+                    label,
+                ],
+                dim=1,
             )
 
         cls_tokens = self.cls_token.expand(B, -1, -1)
@@ -846,28 +867,52 @@ class DistilledVisionTransformer(VisionTransformer):
         return x
 
 
-def resize_pos_embed(posemb, posemb_new):
+# def resize_pos_embed(posemb, posemb_new):
+#     # Rescale the grid of position embeddings when loading from state_dict. Adapted from
+#     # https://github.com/google-research/vision_transformer/blob/00883dd691c63a6830751563748663526e811cee/vit_jax/checkpoint.py#L224
+#     _logger.info("Resized position embedding: %s to %s", posemb.shape, posemb_new.shape)
+#     ntok_new = posemb_new.shape[1]
+#     if True:
+#         posemb_tok, posemb_grid = posemb[:, :1], posemb[0, 1:]
+#         ntok_new -= 1
+#     else:
+#         posemb_tok, posemb_grid = posemb[:, :0], posemb[0]
+#     gs_old = int(math.sqrt(len(posemb_grid)))
+#     gs_new = int(math.sqrt(ntok_new))
+#     _logger.info("Position embedding grid-size from %s to %s", gs_old, gs_new)
+#     posemb_grid = posemb_grid.reshape(1, gs_old, gs_old, -1).permute(0, 3, 1, 2)
+#     posemb_grid = F.interpolate(posemb_grid, size=(gs_new, gs_new), mode="bilinear")
+#     posemb_grid = posemb_grid.permute(0, 2, 3, 1).reshape(1, gs_new * gs_new, -1)
+#     posemb = torch.cat([posemb_tok, posemb_grid], dim=1)
+#     return posemb
+
+
+def resize_pos_embed(posemb, posemb_new, num_tokens=1, gs_new=()):
     # Rescale the grid of position embeddings when loading from state_dict. Adapted from
     # https://github.com/google-research/vision_transformer/blob/00883dd691c63a6830751563748663526e811cee/vit_jax/checkpoint.py#L224
     _logger.info("Resized position embedding: %s to %s", posemb.shape, posemb_new.shape)
     ntok_new = posemb_new.shape[1]
-    if True:
-        posemb_tok, posemb_grid = posemb[:, :1], posemb[0, 1:]
-        ntok_new -= 1
+    if num_tokens:
+        posemb_tok, posemb_grid = posemb[:, :num_tokens], posemb[0, num_tokens:]
+        ntok_new -= num_tokens
     else:
         posemb_tok, posemb_grid = posemb[:, :0], posemb[0]
     gs_old = int(math.sqrt(len(posemb_grid)))
-    gs_new = int(math.sqrt(ntok_new))
-    _logger.info("Position embedding grid-size from %s to %s", gs_old, gs_new)
+    if not len(gs_new):  # backwards compatibility
+        gs_new = [int(math.sqrt(ntok_new))] * 2
+    assert len(gs_new) >= 2
+    _logger.info("Position embedding grid-size from %s to %s", [gs_old, gs_old], gs_new)
     posemb_grid = posemb_grid.reshape(1, gs_old, gs_old, -1).permute(0, 3, 1, 2)
-    posemb_grid = F.interpolate(posemb_grid, size=(gs_new, gs_new), mode="bilinear")
-    posemb_grid = posemb_grid.permute(0, 2, 3, 1).reshape(1, gs_new * gs_new, -1)
+    posemb_grid = F.interpolate(
+        posemb_grid, size=gs_new, mode="bicubic", align_corners=False
+    )
+    posemb_grid = posemb_grid.permute(0, 2, 3, 1).reshape(1, gs_new[0] * gs_new[1], -1)
     posemb = torch.cat([posemb_tok, posemb_grid], dim=1)
     return posemb
 
 
 def checkpoint_filter_fn(state_dict, model):
-    """ convert patch embedding weight from manual patchify + linear proj to conv"""
+    """convert patch embedding weight from manual patchify + linear proj to conv"""
     out_dict = {}
     if "model" in state_dict:
         # For deit models
@@ -920,7 +965,7 @@ def _create_vision_transformer(variant, pretrained=False, distilled=False, **kwa
 
 @register_model
 def vit_small_patch16_224(pretrained=False, **kwargs):
-    """ My custom 'small' ViT model. Depth=8, heads=8= mlp_ratio=3."""
+    """My custom 'small' ViT model. Depth=8, heads=8= mlp_ratio=3."""
     model_kwargs = dict(
         patch_size=16,
         embed_dim=768,
@@ -942,7 +987,7 @@ def vit_small_patch16_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_patch16_224(pretrained=False, **kwargs):
-    """ ViT-Base (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Base (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
@@ -954,8 +999,7 @@ def vit_base_patch16_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_patch32_224(pretrained=False, **kwargs):
-    """ ViT-Base (ViT-B/32) from original paper (https://arxiv.org/abs/2010.11929). No pretrained weights.
-    """
+    """ViT-Base (ViT-B/32) from original paper (https://arxiv.org/abs/2010.11929). No pretrained weights."""
     model_kwargs = dict(patch_size=32, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer(
         "vit_base_patch32_224", pretrained=pretrained, **model_kwargs
@@ -965,7 +1009,7 @@ def vit_base_patch32_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_patch16_384(pretrained=False, **kwargs):
-    """ ViT-Base model (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Base model (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 384x384, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
@@ -977,7 +1021,7 @@ def vit_base_patch16_384(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_patch32_384(pretrained=False, **kwargs):
-    """ ViT-Base model (ViT-B/32) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Base model (ViT-B/32) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 384x384, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(patch_size=32, embed_dim=768, depth=12, num_heads=12, **kwargs)
@@ -989,7 +1033,7 @@ def vit_base_patch32_384(pretrained=False, **kwargs):
 
 @register_model
 def vit_large_patch16_224(pretrained=False, **kwargs):
-    """ ViT-Large model (ViT-L/32) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Large model (ViT-L/32) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(patch_size=16, embed_dim=1024, depth=24, num_heads=16, **kwargs)
@@ -1001,8 +1045,7 @@ def vit_large_patch16_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_large_patch32_224(pretrained=False, **kwargs):
-    """ ViT-Large model (ViT-L/32) from original paper (https://arxiv.org/abs/2010.11929). No pretrained weights.
-    """
+    """ViT-Large model (ViT-L/32) from original paper (https://arxiv.org/abs/2010.11929). No pretrained weights."""
     model_kwargs = dict(patch_size=32, embed_dim=1024, depth=24, num_heads=16, **kwargs)
     model = _create_vision_transformer(
         "vit_large_patch32_224", pretrained=pretrained, **model_kwargs
@@ -1012,7 +1055,7 @@ def vit_large_patch32_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_large_patch16_384(pretrained=False, **kwargs):
-    """ ViT-Large model (ViT-L/16) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Large model (ViT-L/16) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 384x384, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(patch_size=16, embed_dim=1024, depth=24, num_heads=16, **kwargs)
@@ -1024,7 +1067,7 @@ def vit_large_patch16_384(pretrained=False, **kwargs):
 
 @register_model
 def vit_large_patch32_384(pretrained=False, **kwargs):
-    """ ViT-Large model (ViT-L/32) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Large model (ViT-L/32) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 384x384, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(patch_size=32, embed_dim=1024, depth=24, num_heads=16, **kwargs)
@@ -1036,7 +1079,7 @@ def vit_large_patch32_384(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_patch16_224_in21k(pretrained=False, **kwargs):
-    """ ViT-Base model (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Base model (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-21k weights @ 224x224, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(
@@ -1055,7 +1098,7 @@ def vit_base_patch16_224_in21k(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_patch32_224_in21k(pretrained=False, **kwargs):
-    """ ViT-Base model (ViT-B/32) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Base model (ViT-B/32) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-21k weights @ 224x224, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(
@@ -1074,7 +1117,7 @@ def vit_base_patch32_224_in21k(pretrained=False, **kwargs):
 
 @register_model
 def vit_large_patch16_224_in21k(pretrained=False, **kwargs):
-    """ ViT-Large model (ViT-L/16) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Large model (ViT-L/16) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-21k weights @ 224x224, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(
@@ -1093,7 +1136,7 @@ def vit_large_patch16_224_in21k(pretrained=False, **kwargs):
 
 @register_model
 def vit_large_patch32_224_in21k(pretrained=False, **kwargs):
-    """ ViT-Large model (ViT-L/32) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Large model (ViT-L/32) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-21k weights @ 224x224, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(
@@ -1112,7 +1155,7 @@ def vit_large_patch32_224_in21k(pretrained=False, **kwargs):
 
 @register_model
 def vit_huge_patch14_224_in21k(pretrained=False, **kwargs):
-    """ ViT-Huge model (ViT-H/14) from original paper (https://arxiv.org/abs/2010.11929).
+    """ViT-Huge model (ViT-H/14) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-21k weights @ 224x224, source https://github.com/google-research/vision_transformer.
     NOTE: converted weights not currently available, too large for github release hosting.
     """
@@ -1132,7 +1175,7 @@ def vit_huge_patch14_224_in21k(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_resnet50_224_in21k(pretrained=False, **kwargs):
-    """ R50+ViT-B/16 hybrid model from original paper (https://arxiv.org/abs/2010.11929).
+    """R50+ViT-B/16 hybrid model from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-21k weights @ 224x224, source https://github.com/google-research/vision_transformer.
     """
     # create a ResNetV2 w/o pre-activation, that uses StdConv and GroupNorm and has 3 stages, no head
@@ -1161,7 +1204,7 @@ def vit_base_resnet50_224_in21k(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_resnet50_384(pretrained=False, **kwargs):
-    """ R50+ViT-B/16 hybrid from original paper (https://arxiv.org/abs/2010.11929).
+    """R50+ViT-B/16 hybrid from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 384x384, source https://github.com/google-research/vision_transformer.
     """
     # create a ResNetV2 w/o pre-activation, that uses StdConv and GroupNorm and has 3 stages, no head
@@ -1185,8 +1228,7 @@ def vit_base_resnet50_384(pretrained=False, **kwargs):
 
 @register_model
 def vit_small_resnet26d_224(pretrained=False, **kwargs):
-    """ Custom ViT small hybrid w/ ResNet26D stride 32. No pretrained weights.
-    """
+    """Custom ViT small hybrid w/ ResNet26D stride 32. No pretrained weights."""
     backbone = resnet26d(
         pretrained=pretrained,
         in_chans=kwargs.get("in_chans", 3),
@@ -1209,8 +1251,7 @@ def vit_small_resnet26d_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_small_resnet50d_s3_224(pretrained=False, **kwargs):
-    """ Custom ViT small hybrid w/ ResNet50D 3-stages, stride 16. No pretrained weights.
-    """
+    """Custom ViT small hybrid w/ ResNet50D 3-stages, stride 16. No pretrained weights."""
     backbone = resnet50d(
         pretrained=pretrained,
         in_chans=kwargs.get("in_chans", 3),
@@ -1233,8 +1274,7 @@ def vit_small_resnet50d_s3_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_resnet26d_224(pretrained=False, **kwargs):
-    """ Custom ViT base hybrid w/ ResNet26D stride 32. No pretrained weights.
-    """
+    """Custom ViT base hybrid w/ ResNet26D stride 32. No pretrained weights."""
     backbone = resnet26d(
         pretrained=pretrained,
         in_chans=kwargs.get("in_chans", 3),
@@ -1252,8 +1292,7 @@ def vit_base_resnet26d_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_resnet50d_224(pretrained=False, **kwargs):
-    """ Custom ViT base hybrid w/ ResNet50D stride 32. No pretrained weights.
-    """
+    """Custom ViT base hybrid w/ ResNet50D stride 32. No pretrained weights."""
     backbone = resnet50d(
         pretrained=pretrained,
         in_chans=kwargs.get("in_chans", 3),
@@ -1271,7 +1310,7 @@ def vit_base_resnet50d_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_deit_tiny_patch16_224(pretrained=False, **kwargs):
-    """ DeiT-tiny model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
+    """DeiT-tiny model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
     model_kwargs = dict(patch_size=16, embed_dim=192, depth=12, num_heads=3, **kwargs)
@@ -1283,7 +1322,7 @@ def vit_deit_tiny_patch16_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_deit_small_patch16_224(pretrained=False, **kwargs):
-    """ DeiT-small model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
+    """DeiT-small model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
     model_kwargs = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6, **kwargs)
@@ -1295,7 +1334,7 @@ def vit_deit_small_patch16_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_deit_base_patch16_224(pretrained=False, **kwargs):
-    """ DeiT base model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
+    """DeiT base model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
@@ -1307,7 +1346,7 @@ def vit_deit_base_patch16_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_deit_base_patch16_384(pretrained=False, **kwargs):
-    """ DeiT base model @ 384x384 from paper (https://arxiv.org/abs/2012.12877).
+    """DeiT base model @ 384x384 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
@@ -1319,7 +1358,7 @@ def vit_deit_base_patch16_384(pretrained=False, **kwargs):
 
 @register_model
 def vit_deit_tiny_distilled_patch16_224(pretrained=False, **kwargs):
-    """ DeiT-tiny distilled model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
+    """DeiT-tiny distilled model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
     model_kwargs = dict(patch_size=16, embed_dim=192, depth=12, num_heads=3, **kwargs)
@@ -1334,7 +1373,7 @@ def vit_deit_tiny_distilled_patch16_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_deit_small_distilled_patch16_224(pretrained=False, **kwargs):
-    """ DeiT-small distilled model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
+    """DeiT-small distilled model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
     model_kwargs = dict(patch_size=16, embed_dim=384, depth=12, num_heads=6, **kwargs)
@@ -1349,7 +1388,7 @@ def vit_deit_small_distilled_patch16_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_deit_base_distilled_patch16_224(pretrained=False, **kwargs):
-    """ DeiT-base distilled model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
+    """DeiT-base distilled model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
@@ -1364,7 +1403,7 @@ def vit_deit_base_distilled_patch16_224(pretrained=False, **kwargs):
 
 @register_model
 def vit_deit_base_distilled_patch16_384(pretrained=False, **kwargs):
-    """ DeiT-base distilled model @ 384x384 from paper (https://arxiv.org/abs/2012.12877).
+    """DeiT-base distilled model @ 384x384 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
@@ -1375,4 +1414,3 @@ def vit_deit_base_distilled_patch16_384(pretrained=False, **kwargs):
         **model_kwargs,
     )
     return model
-
