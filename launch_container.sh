@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 if [ -z $CUDA_VISIBLE_DEVICES ]; then
-    CUDA_VISIBLE_DEVICES='2'
+    CUDA_VISIBLE_DEVICES='0'
 fi
 
 

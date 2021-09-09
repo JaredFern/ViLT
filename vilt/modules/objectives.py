@@ -124,10 +124,10 @@ def compute_attn_analysis(pl_module, infer):
         for target_seg in seg2id.keys():
             for src_seg in seg2id.keys():
                 if src_seg not in attn_confusion[target_seg]:
-                    seg2attn[target_seg][src_seg].append(torch.zeros(12, 12).cuda())
+                    seg2attn[target_seg][src_seg].append(torch.zeros(12, 12).cpu())
                 else:
                     seg2attn[target_seg][src_seg].append(
-                        attn_confusion[target_seg][src_seg]
+                        attn_confusion[target_seg][src_seg].cpu()
                     )
 
     return seg2attn
@@ -650,9 +650,7 @@ def attn_analysis_wrapup(outs):
 
     for target_seg in seg2id.keys():
         for src_seg in seg2id.keys():
-            attns[target_seg][src_seg] = (
-                torch.stack(attns[target_seg][src_seg]).mean(0).cpu()
-            )
+            attns[target_seg][src_seg] = torch.stack(attns[target_seg][src_seg]).mean(0)
 
     with open("attn_analysis.p", "wb") as fp:
         pickle.dump(dict(attns), fp)

@@ -39,13 +39,18 @@ def make_arrow(root, dataset_root):
     paths = list(glob(f"{root}/flickr30k-images/*.jpg"))
     random.shuffle(paths)
     caption_paths = [path for path in paths if path.split("/")[-1] in iid2captions]
+    import pdb
+
+    pdb.set_trace()
 
     if len(paths) == len(caption_paths):
         print("all images have caption annotations")
     else:
         print("not all images have caption annotations")
     print(
-        len(paths), len(caption_paths), len(iid2captions),
+        len(paths),
+        len(caption_paths),
+        len(iid2captions),
     )
 
     bs = [path2rest(path, iid2captions, iid2split) for path in tqdm(caption_paths)]
@@ -54,7 +59,8 @@ def make_arrow(root, dataset_root):
         batches = [b for b in bs if b[-1] == split]
 
         dataframe = pd.DataFrame(
-            batches, columns=["image", "caption", "image_id", "split"],
+            batches,
+            columns=["image", "caption", "image_id", "split"],
         )
 
         table = pa.Table.from_pandas(dataframe)

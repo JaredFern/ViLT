@@ -1,66 +1,85 @@
 import gc
 import json
+import multiprocessing
 import os
 import random
+from functools import partial
 from glob import glob
+from tqdm.contrib.concurrent import process_map
 
 import pandas as pd
 import pyarrow as pa
 from tqdm import tqdm
 
 
-def path2rest(path, iid2captions):
-    split, _, name = path.split("/")[-3:]
-    split = split.split("_")[-1]
-    iid = name
+def dump_arrow(batch_idx, dataset_root, caption_paths, img_to_captions, batch_size):
+    with pa.OSFile(f"{dataset_root}/sbu_{batch_idx}.arrow", "wb") as sink:
+        examples = list()
+        for idx, path in enumerate(
+            tqdm(
+                caption_paths[batch_idx : batch_idx + batch_size],
+                position=batch_idx % (4 * batch_size),
+            )
+        ):
+            binary = open(path, "rb").read()
+            img_id = os.path.basename(path)
+            captions = img_to_captions[img_id]
+            examples.append([binary, captions, img_id, "train"])
 
-    with open(path, "rb") as fp:
-        binary = fp.read()
+            if not idx % 20000:
+                dataframe = pd.DataFrame(
+                    examples, columns=["image", "caption", "image_id", "split"]
+                )
+                table = pa.Table.from_pandas(dataframe)
+                os.makedirs(dataset_root, exist_ok=True)
+                with pa.RecordBatchFileWriter(sink, table.schema) as writer:
+                    writer.write_table(table)
 
-    captions = iid2captions[iid]
+                del dataframe
+                del table
+                del examples
+                gc.collect()
 
-    return [
-        binary,
-        captions,
-        iid,
-        split,
-    ]
-
-
-def make_arrow(root, dataset_root):
-    with open(f"{root}/annot.json", "r") as fp:
-        captions = json.load(fp)
-
-    iid2captions = dict()
-    for cap in tqdm(captions):
-        iid = cap[0].split("/")[-1]
-        iid2captions[iid] = [cap[1]]
-
-    paths = list(glob(f"{root}/images_train/*/*"))
-    random.shuffle(paths)
-    caption_paths = [path for path in paths if path.split("/")[-1] in iid2captions]
-    if len(paths) == len(caption_paths):
-        print("all images have caption annotations")
-    else:
-        print("not all images have caption annotations")
-    print(
-        len(paths), len(caption_paths), len(iid2captions),
-    )
-
-    sub_len = int(len(caption_paths) // 100000)
-    subs = list(range(sub_len + 1))
-    for sub in subs:
-        sub_paths = caption_paths[sub * 100000 : (sub + 1) * 100000]
-        bs = [path2rest(path, iid2captions) for path in tqdm(sub_paths)]
-        dataframe = pd.DataFrame(bs, columns=["image", "caption", "image_id", "split"],)
-
+                examples = list()
+        dataframe = pd.DataFrame(
+            examples, columns=["image", "caption", "image_id", "split"]
+        )
         table = pa.Table.from_pandas(dataframe)
-
         os.makedirs(dataset_root, exist_ok=True)
-        with pa.OSFile(f"{dataset_root}/sbu_{sub}.arrow", "wb") as sink:
-            with pa.RecordBatchFileWriter(sink, table.schema) as writer:
-                writer.write_table(table)
+        with pa.RecordBatchFileWriter(sink, table.schema) as writer:
+            writer.write_table(table)
+
         del dataframe
         del table
-        del bs
+        del examples
         gc.collect()
+
+
+def make_arrow(root, dataset_root, annotations_json, splits=[""], batch_size=50000):
+    dataset = json.load(open(annotations_json, "rb"))
+    paths = list(glob(os.path.join(root, "images/*")))
+    random.shuffle(paths)
+    caption_paths = [path for path in paths if path.split("/")[-1] in dataset]
+
+    load_data = partial(
+        dump_arrow,
+        dataset_root=dataset_root,
+        caption_paths=caption_paths,
+        img_to_captions=dataset,
+        batch_size=batch_size,
+    )
+
+    batched_annots = process_map(
+        load_data,
+        [idxs for idxs in range(0, len(caption_paths), batch_size)],
+        max_workers=4,
+    )
+
+
+if __name__ == "__main__":
+    make_arrow(
+        "/data/datasets/SBU",
+        "/data/jaredfer/vilt/datasets/arrows_pretrain",
+        "/data/datasets/SBU/annot.json",
+        batch_size=100000,
+    )

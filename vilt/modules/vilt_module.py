@@ -258,9 +258,7 @@ class ViLTransformerSS(pl.LightningModule):
         if "irtr" in self.current_tasks:
             ret.update(objectives.compute_irtr(self, batch))
 
-        # if attn_analysis:
-        #     ret.update(objectives.compute_attn_analysis(self, batch))
-
+        torch.cuda.empty_cache()
         return ret
 
     def training_step(self, batch, batch_idx):
@@ -298,7 +296,7 @@ class ViLTransformerSS(pl.LightningModule):
         if self.hparams.config["loss_names"]["vqa"] > 0:
             objectives.vqa_test_wrapup(outs, model_name)
 
-        if True:  # self.hparams.config["attn_analysis"]:
+        if True:  #  self.hparams.config["attn_analysis"]:
             objectives.attn_analysis_wrapup(outs)
 
         vilt_utils.epoch_wrapup(self)

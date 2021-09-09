@@ -27,7 +27,7 @@ def config():
     # Image setting
     train_transform_keys = ["pixelbert"]
     val_transform_keys = ["pixelbert"]
-    image_size = 384
+    image_size = 224
     max_image_len = -1
     patch_size = 32
     draw_false_image = 1
@@ -268,7 +268,7 @@ def step200k():
 
 @ex.named_config
 def vit32_base():
-    vit = "vit_base_patch32_384"
+    vit = "vit_base_patch32_224"
     patch_size = 32
     hidden_size = 768
     num_heads = 12

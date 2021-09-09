@@ -78,6 +78,9 @@ class BaseDataset(torch.utils.data.Dataset):
         else:
             for i in range(len(self.table)):
                 self.index_mapper[i] = (i, None)
+        import pdb
+
+        pdb.set_trace()
 
     @property
     def corpus(self):
@@ -156,7 +159,7 @@ class BaseDataset(torch.utils.data.Dataset):
                     ret.update(self.get_false_text(i))
                 result = True
             except Exception as e:
-                print(f"Error while read file idx {index} in {self.names[0]} -> {e}")
+                # print(f"Error while read file idx {index} in {self.names[0]} -> {e}")
                 index = random.randint(0, len(self.index_mapper) - 1)
         return ret
 

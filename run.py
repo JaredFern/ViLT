@@ -45,7 +45,6 @@ def main(_config):
     )
 
     max_steps = _config["max_steps"] if _config["max_steps"] is not None else None
-
     trainer = pl.Trainer(
         gpus=_config["num_gpus"],
         num_nodes=_config["num_nodes"],
@@ -66,6 +65,8 @@ def main(_config):
         weights_summary="top",
         fast_dev_run=_config["fast_dev_run"],
         val_check_interval=_config["val_check_interval"],
+        # limit_val_batches=0.05,
+        # limit_test_batches=0.05,
     )
 
     if not _config["test_only"]:
