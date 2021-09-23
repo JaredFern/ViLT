@@ -162,7 +162,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
     def collate(self, batch, mlm_collator):
         batch_size = len(batch)
-        keys = set([key for b in batch for key in b.keys()])
+        keys = {key for b in batch for key in b.keys()}
         dict_batch = {k: [dic[k] if k in dic else None for dic in batch] for k in keys}
 
         img_keys = [k for k in list(dict_batch.keys()) if "image" in k]
@@ -178,8 +178,8 @@ class BaseDataset(torch.utils.data.Dataset):
             ), f"Collate error, an image should be in shape of (3, H, W), instead of given {size}"
 
         if len(img_keys) != 0:
-            max_height = max([i[1] for i in img_sizes])
-            max_width = max([i[2] for i in img_sizes])
+            max_height = max(i[1] for i in img_sizes)
+            max_width = max(i[2] for i in img_sizes)
 
         for img_key in img_keys:
             img = dict_batch[img_key]

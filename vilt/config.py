@@ -69,7 +69,7 @@ def config():
     fast_dev_run = False
     val_check_interval = 1.0
     test_only = False
-    resume_training=False
+    resume_training = False
 
     # below params varies with the environment
     data_root = ""
@@ -96,7 +96,7 @@ def env_dandelin():
 @ex.named_config
 def task_mlm_itm():
     exp_name = "mlm_itm"
-    datasets = ["coco", "vg", "sbu", "gcc"]
+    datasets = ["vg", "sbu", "gcc"]
     loss_names = _loss_names({"itm": 1, "mlm": 1})
     batch_size = 4096
     max_epoch = 10

@@ -296,8 +296,8 @@ class ViLTransformerSS(pl.LightningModule):
         if self.hparams.config["loss_names"]["vqa"] > 0:
             objectives.vqa_test_wrapup(outs, model_name)
 
-        if True:  #  self.hparams.config["attn_analysis"]:
-            objectives.attn_analysis_wrapup(outs)
+        # if True:  #  self.hparams.config["attn_analysis"]:
+        #    objectives.attn_analysis_wrapup(outs)
 
         vilt_utils.epoch_wrapup(self)
 
