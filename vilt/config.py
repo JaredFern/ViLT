@@ -69,6 +69,7 @@ def config():
     fast_dev_run = False
     val_check_interval = 1.0
     test_only = False
+    resume_training=False
 
     # below params varies with the environment
     data_root = ""

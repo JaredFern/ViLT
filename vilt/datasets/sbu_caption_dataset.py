@@ -10,7 +10,7 @@ class SBUCaptionDataset(BaseDataset):
             split = "val"
 
         if split == "train":
-            names = [f"sbu_{i}" for i in range(9)]
+            names = [f"sbu_{i}" for i in range(0,900000,100000)]
         elif split == "val":
             names = []
 

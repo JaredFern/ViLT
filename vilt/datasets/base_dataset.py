@@ -78,9 +78,6 @@ class BaseDataset(torch.utils.data.Dataset):
         else:
             for i in range(len(self.table)):
                 self.index_mapper[i] = (i, None)
-        import pdb
-
-        pdb.set_trace()
 
     @property
     def corpus(self):
