@@ -16,6 +16,16 @@ def main(_config):
     dm = MTDataModule(_config, dist=True)
 
     model = ViLTransformerSS(_config)
+    if _config["freeze_vit"]:
+        for param in model.parameters():
+            param.requires_grad = False
+        model.text_embeddings.word_embeddings.weight.requires_grad = True
+        model.text_embeddings.position_embeddings.weight.requires_grad = True
+        model.text_embeddings.token_type_embeddings.weight.requires_grad = True
+        model.text_embeddings.LayerNorm.weight.requires_grad = True
+        model.token_type_embeddings.weight.requires_grad = True
+
+
     exp_name = f'{_config["exp_name"]}'
 
     os.makedirs(_config["log_dir"], exist_ok=True)
@@ -72,6 +82,7 @@ def main(_config):
             # limit_test_batches=0.05,
         )
 
+    import pdb; pdb.set_trace()
     if not _config["test_only"]:
         trainer.fit(model, datamodule=dm)
     else:
